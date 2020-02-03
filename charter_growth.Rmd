@@ -1,0 +1,146 @@
+---
+title: "Charter school growth over time"
+author: "rpm"
+date: "1/17/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(educationdata)
+library(sf)
+library(tidycensus)
+library(gghighlight)
+library(sp)
+library(maps)
+library(maptools)
+options(tigris_use_cache = TRUE)
+```
+
+# Charter enrollment in 2016 by county (the most recent year in the CCD)
+```{r}
+dat16 <-
+  get_education_data(level = "schools",
+                     source = "ccd",
+                     topic = "directory",
+                     filters = list(year = 2016)) %>% 
+  na_if(., -2) %>% 
+  filter(
+    fips <= 59,
+    !fips %in% c(2, 15)
+    ) 
+```
+
+# Fill in missing county information
+```{r}
+latlon_to_county <- function(latlon_df) {
+  counties <- map('county', fill=TRUE, col="transparent", plot=FALSE)
+  county_names <- str_split(counties$names, ",", simplify = TRUE)[, 2]
+  counties_map<- map2SpatialPolygons(counties, IDs=county_names,
+                                     proj4string=CRS("+proj=longlat +datum=WGS84"))
+  lonlat_sp <- SpatialPoints(latlon_df, 
+                             proj4string=CRS("+proj=longlat +datum=WGS84"))
+  
+}
+```
+
+
+```{r}
+# Some states have no charter laws, and therefore no charters!
+no_charter <- c("MT", "VT", "SD", "ND", "NE")
+
+dat16_enroll <- 
+  dat16 %>% 
+  na_if(-2) %>% 
+  group_by(charter, county_code, .drop = TRUE) %>% 
+  summarize(enrollment = sum(enrollment, na.rm = TRUE)) %>% 
+  arrange(county_code) %>% 
+  group_by(county_code) %>% 
+  mutate(
+    prop = round(enrollment / sum(enrollment, na.rm = TRUE), 2)
+  ) %>% 
+  ungroup() %>% 
+  mutate(county_code = ifelse(nchar(county_code) < 5, paste0("0", county_code), county_code))
+
+dat16_enroll
+```
+
+```{r}
+acs16 <-
+  get_acs(
+    geography = "county",
+    variables = c(
+      "B01001_004", # total male 5 to 9
+      "B01001_005", # total male 10 to 14
+      "B01001_006", # total male 15 to 17
+      "B01001_028", # total female 5 to 9
+      "B01001_029", # total female 10 to 14
+      "B01001_030"  # total female 15 to 17
+      ),
+    geometry = TRUE,
+    summary_var	= "B01001_001",
+    output = "wide"
+    )
+```
+
+```{r}
+dat16_enroll <-
+  dat16_enroll %>% 
+  filter(county_code %in% acs16$GEOID) %>% 
+  left_join(acs16, by = c("county_code" = "GEOID"))
+```
+
+```{r}
+dat16_enroll %>% 
+  filter(charter == 1) %>% 
+  ggplot() +
+  geom_sf(aes(geometry =  geometry, fill = prop))
+```
+
+
+# Charter enrollment over time
+```{r}
+school_dat <-
+  get_education_data(level = "schools",
+                     source = "ccd",
+                     topic = "directory",
+                     filters = list(year = 2002:2016)) %>% 
+  na_if(., -2) %>% 
+  filter(
+    fips <= 59,
+    !fips %in% c(2, 15)
+    ) 
+
+tmp <- dat16 %>% select(leaid, county_code) %>% distinct()
+school_dat$county_code[is.na(school_dat$county_code)] <- tmp$county_code[match(school_dat$leaid[is.na(school_dat$county_code)], tmp$leaid)]
+```
+
+```{r}
+charter_enroll <- 
+  school_dat %>% 
+  filter(county_code != -1, !is.na(charter), charter != -1, !is.na(county_code)) %>% 
+  na_if(-2) %>% 
+  group_by(charter, county_code, year, .drop = FALSE) %>% 
+  summarize(enrollment = sum(enrollment, na.rm = TRUE)) %>% 
+  arrange(county_code) %>% 
+  group_by(county_code, year) %>% 
+  mutate(
+    prop = round(enrollment / sum(enrollment, na.rm = TRUE), 2)
+  ) %>% 
+  ungroup() %>% 
+  mutate(county_code = ifelse(nchar(county_code) < 5, paste0("0", county_code), county_code)) %>% 
+  complete(charter, nesting(county_code, year), fill = list(enrollment = 0, prop = 0)) %>% 
+  arrange(county_code, year, charter) 
+
+charter_enroll
+```
+
+```{r}
+charter_enroll %>% 
+  filter(charter == 1) %>% 
+  ggplot(aes(x = year, y = prop, group = county_code)) +
+  geom_line()
+```
+
+
