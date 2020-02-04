@@ -11,7 +11,7 @@ library(tidyverse)
 library(educationdata)
 library(sf)
 library(tidycensus)
-library(gghighlight)
+library(gganimate)
 library(sp)
 library(maps)
 library(maptools)
@@ -19,7 +19,9 @@ options(tigris_use_cache = TRUE)
 ```
 
 # Charter enrollment in 2016 by county (the most recent year in the CCD)
-```{r}
+
+Start by getting data from the [Common Core of Data API](https://educationdata.urban.org/documentation/index.html) built and maintained by [the Urban Institute](http://www.urban.org) (an **invaluable** resource). We need school-level data, because the district-level data does not have enrollment disaggregated by school type (i.e., doesn't tell us the total enrollment in charters.) This means that accessing the data through the API will take more time (there are a lot of schools in America!) and we will have to aggregate up to the county-level.
+```{r warning=FALSE, message=FALSE}
 dat16 <-
   get_education_data(level = "schools",
                      source = "ccd",
@@ -32,24 +34,23 @@ dat16 <-
     ) 
 ```
 
-# Fill in missing county information
+In the above code, I exclude school from the non-contiguous states and territories (sorry Hawai'i, Alaska, American Samoa, etc.) just to make the map easier to plot.
+
+Charter laws were adopted at different times by states and, most importantly, some states do not have charters. In 2016, seven states did not have charter laws on the books. (West Virginia has since adopted a charter law.) Unfortunately, the CCD API returns the `charter` flag as missing (`-2`) if the state does not have a charter law rather than `0`. So, we need to recode those missing values as `0`, so that when we aggregate to the county-level, the enrollment for school in these states is attributed to traditional schools (`charter == 0`) consistently across years and states.
+
 ```{r}
-latlon_to_county <- function(latlon_df) {
-  counties <- map('county', fill=TRUE, col="transparent", plot=FALSE)
-  county_names <- str_split(counties$names, ",", simplify = TRUE)[, 2]
-  counties_map<- map2SpatialPolygons(counties, IDs=county_names,
-                                     proj4string=CRS("+proj=longlat +datum=WGS84"))
-  lonlat_sp <- SpatialPoints(latlon_df, 
-                             proj4string=CRS("+proj=longlat +datum=WGS84"))
-  
-}
+# Some states have no charter laws (or did not at the time), and therefore no charters!
+no_charter <- c("MT", "VT", "SD", "ND", "NE", "KY", "WV")
+
+dat16 <-
+  dat16 %>% 
+  mutate(
+    charter = ifelse(state_location %in% no_charter, 0, charter)
+  )
 ```
 
-
+Now we can aggregate to the county level and find the proportion of students enrolled in charter schools and in traditional schools. 
 ```{r}
-# Some states have no charter laws, and therefore no charters!
-no_charter <- c("MT", "VT", "SD", "ND", "NE")
-
 dat16_enroll <- 
   dat16 %>% 
   na_if(-2) %>% 
@@ -61,15 +62,19 @@ dat16_enroll <-
     prop = round(enrollment / sum(enrollment, na.rm = TRUE), 2)
   ) %>% 
   ungroup() %>% 
-  mutate(county_code = ifelse(nchar(county_code) < 5, paste0("0", county_code), county_code))
+  mutate(county_code = ifelse(nchar(county_code) < 5, paste0("0", county_code), county_code)) %>% 
+  complete(charter, nesting(county_code), fill = list(enrollment = 0, prop = 0)) %>% 
+  arrange(county_code)
 
 dat16_enroll
 ```
 
+To get county geographic data, I use `tidycensus`. I grab a few other census-related variables (just in case!) I like using `tidycensus` to get geographic data because it works great with `dplyr`, `ggplot2`, and `sf`. After grabbing that data, I merge it with the school data in `dat16_enroll`.
 ```{r}
 acs16 <-
   get_acs(
     geography = "county",
+    year = 2016,
     variables = c(
       "B01001_004", # total male 5 to 9
       "B01001_005", # total male 10 to 14
@@ -82,40 +87,113 @@ acs16 <-
     summary_var	= "B01001_001",
     output = "wide"
     )
-```
 
-```{r}
 dat16_enroll <-
   dat16_enroll %>% 
   filter(county_code %in% acs16$GEOID) %>% 
   left_join(acs16, by = c("county_code" = "GEOID"))
+
+dat16_enroll$geometry
 ```
 
+The `sf` package with `ggplot2` makes plotting maps and geographic data trivially easy. In this first plot, I use the proportion of students enrolled in charter schools as the fill for counties. 
 ```{r}
-dat16_enroll %>% 
+usa <- map('state', fill=TRUE, col="transparent", plot=FALSE)
+usa <- st_as_sf(usa)
+usa <- st_transform(usa, st_crs(dat16_enroll$geometry))
+
+p1 <- 
+  dat16_enroll %>% 
   filter(charter == 1) %>% 
   ggplot() +
-  geom_sf(aes(geometry =  geometry, fill = prop))
+  geom_sf(aes(geometry =  geometry, fill = prop), size = 0.2) + 
+  geom_sf(data = usa, fill = "transparent", inherit.aes = FALSE, size = 0.5) +
+  scale_fill_distiller(name = "", palette = "Spectral",  limits = c(0, 1)) + 
+  ggtitle("Proportion of students enrolled in charter schools by county, 2016") +
+  theme_void()
+
+p1
 ```
 
+As we can see, most counties have no student enrolled in charter schools. Enrolled in notable in western states, the south, and the Great Lakes region. Arizona, Colorado, California, Oregon, and Florida look like they have the most student enrolled in charter school as a proportion of total enrollment.
 
-# Charter enrollment over time
+This make uses the same data, but I create categories to make contrasts staker.
 ```{r}
+p2 <- 
+  dat16_enroll %>% 
+  filter(charter == 1) %>% 
+  mutate(
+    cate_prop = case_when(
+      prop > 0.95 ~                "Above 95%",
+      between(prop, 0.75, 0.949) ~  "Between 75% and 95%",
+      between(prop, 0.5, 0.749) ~   "Between 50% and 75%",
+      between(prop, 0.25, 0.49) ~   "Between 25% and 50%",
+      between(prop, 0.10, 0.249) ~  "Between 10% and 25%",
+      between(prop, 0.01, 0.1) ~    "Betweee 1% and 10%",
+      prop < 0.01 ~                 "Under 1%"
+      )
+    ) %>% 
+  mutate(cate_prop = factor(cate_prop, levels = c("Above 95%", 
+                                                  "Between 75% and 95%", 
+                                                  "Between 50% and 75%", 
+                                                  "Between 25% and 50%",
+                                                  "Between 10% and 25%",
+                                                  "Betweee 1% and 10%",
+                                                  "Under 1%"))
+         ) %>% 
+  ggplot() +
+  geom_sf(aes(geometry =  geometry, fill = cate_prop), size = 0.2) + 
+  geom_sf(data = usa, fill = "transparent", inherit.aes = FALSE, size = 0.5) +
+  scale_fill_viridis_d(name = "", option = "inferno") + 
+  ggtitle("Proportion of students enrolled in charter schools by county, 2016") +
+  theme_void()
+
+p2
+```
+
+# Charter enrollment over time, 2000-2016
+
+The [`gganimate` package](https://gganimate.com/) makes it fairly simple to create animanted plots using the `ggplot` syntax. First, I will grab enrollment data from the CCD API (as before), but this time for everyother year from 2000 to 2016 (skipping a year saves time and memory, because, as I said, there are a lot of school in the US!).
+
+I discovered the hard way that county data (`county_code`) is missing from many states in the early aughts. I fill in this data using the city and state information and the school district (`leaid`) information. This gets most of the missing county data. Again, I replace missing values for the `charter` flag with 0.
+
+**Please note**: It takes ~one hour to pull the data from the CCD API!
+
+```{r warning=FALSE, message=FALSE}
 school_dat <-
   get_education_data(level = "schools",
                      source = "ccd",
                      topic = "directory",
-                     filters = list(year = 2002:2016)) %>% 
+                     filters = list(year = seq(from = 2000, to = 2016, by = 2))) %>% 
   na_if(., -2) %>% 
   filter(
     fips <= 59,
     !fips %in% c(2, 15)
-    ) 
+    ) %>% 
+  as_tibble()
 
-tmp <- dat16 %>% select(leaid, county_code) %>% distinct()
-school_dat$county_code[is.na(school_dat$county_code)] <- tmp$county_code[match(school_dat$leaid[is.na(school_dat$county_code)], tmp$leaid)]
+school_dat <- 
+  school_dat %>% 
+  arrange(ncessch_num, year) %>% 
+  group_by(city_location, state_location) %>% 
+  fill(county_code, .direction = "downup") %>% 
+  fill(longitude, .direction = "downup") %>% 
+  fill(latitude, .direction = "downup") %>% 
+  group_by(leaid) %>% 
+  fill(county_code, .direction = "downup") %>% 
+  fill(longitude, .direction = "downup") %>% 
+  fill(latitude, .direction = "downup") %>% 
+  ungroup()
+
+# States with no charter law overall and by years
+school_dat <-
+    school_dat %>% 
+    mutate(
+        charter = ifelse(is.na(charter), 0, charter)
+    )
 ```
 
+Again, I aggregate up to county-level and join with the ACS census data. I just use the county boundary data from 2016. There is a chance some county boundaries may have changed, but I'm not going to worry about that because that nuance likely does not matter.
 ```{r}
 charter_enroll <- 
   school_dat %>% 
@@ -134,13 +212,29 @@ charter_enroll <-
   arrange(county_code, year, charter) 
 
 charter_enroll
+
+charter_enroll <-
+  charter_enroll %>% 
+  filter(county_code %in% acs16$GEOID) %>% 
+  left_join(acs16, by = c("county_code" = "GEOID"))
 ```
 
+To create the animation, we add the `transition_manual` to the `ggplot` pipeline. This tell `gganimate` to facet the animation by year. So for each year, a plot is created and then packaged into a gif.
 ```{r}
-charter_enroll %>% 
+p <- 
+  charter_enroll %>% 
   filter(charter == 1) %>% 
-  ggplot(aes(x = year, y = prop, group = county_code)) +
-  geom_line()
+  ggplot() +
+  geom_sf(aes(geometry =  geometry, fill = prop), size = 0.2) + 
+  geom_sf(data = usa, fill = "transparent", inherit.aes = FALSE, size = 0.5) +
+  scale_fill_distiller(name = "", palette = "Spectral") + 
+  theme_void() +
+  theme(legend.position = "bottom") +
+  labs(title = "Proportion of students enrolled in Charter Schools", subtitle = "Year: {current_frame}") +
+  transition_manual(year) 
+
+animate(p, fps = 5)
+anim_save("charter_by_year.gif")
 ```
 
 
