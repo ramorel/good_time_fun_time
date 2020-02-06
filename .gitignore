@@ -4,3 +4,4 @@
 .Ruserdata
 *.Rproj
 *.RData
+*.DS_Store
