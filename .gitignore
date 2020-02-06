@@ -5,3 +5,5 @@
 *.Rproj
 *.RData
 *.DS_Store
+*.zip
+*.shp
