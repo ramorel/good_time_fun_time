@@ -81,14 +81,16 @@ ca_ds_2015 <-
       ~ school_districts("ca", year = 2015, type = .x, class = "sf")) %>% 
   rbind_tigris() %>% 
   mutate(year = 2015) %>% 
-  select(GEOID, year, geometry)
+  select(GEOID, year, geometry) %>% 
+  mutate(GEOID = as.character(as.numeric(GEOID)))
 
 ca_ds_2011 <- 
   map(c("unified", "elementary"),
       ~ school_districts("ca", year = 2011, type = .x, class = "sf")) %>% 
   rbind_tigris()  %>% 
   mutate(year = 2011) %>% 
-  select(GEOID, year, geometry)
+  select(GEOID, year, geometry) %>% 
+  mutate(GEOID = as.character(as.numeric(GEOID)))
 
 ca_ds <- list(ca_ds_2011, ca_ds_2015)
 
@@ -264,19 +266,6 @@ p2 <- ca_dat %>%
 
 # Bivariate map
 
-# create 3 buckets for local rev
-quantiles_loc_rev <- ca_dat %>%
-  filter(year == 2015) %>% 
-  pull(rev_local_total_per_pupil) %>%
-  quantile(probs = seq(0, 1, length.out = 5), na.rm = TRUE)
-
-# create 3 buckets for white
-quantiles_white <- ca_dat %>%
-  filter(year == 2015) %>% 
-  mutate(prop_white = white/total) %>%
-  pull(prop_white) %>%
-  quantile(probs = seq(0, 1, length.out = 5))
-
 
 bivariate_color_scale <- tibble(
   group = c(
@@ -332,8 +321,10 @@ ca_rev <- ca_dat %>%
       mutate(group = paste(as.numeric(value), "-", as.numeric(white_quantiles))) %>% 
       left_join(bivariate_color_scale) %>% 
       left_join(.y %>% 
-                  select(GEOID, geometry),
-                by = c("leaid" = "GEOID"))
+                  select(GEOID, geometry, year),
+                by = c("leaid" = "GEOID",
+                       "year")) %>% 
+      filter(!is.na(color))
   )
 
 ca_rev <- rbind(ca_rev[[1]], ca_rev[[2]]) %>% st_as_sf()
@@ -350,7 +341,6 @@ ca_map <- ca_rev %>%
     ~ .x %>% 
       ggplot() +
       geom_sf(aes(geometry = geometry, fill = color), size = 0.1, color = "white") +
-      geom_sf(data = cities, size = 0.9) +
       scale_fill_identity() +
       labs(subtitle = glue("Proportion white and per pupil {tolower(unique(.x$name))} by district")) +
       coord_sf() +
@@ -382,7 +372,7 @@ leg <-
   # quadratic tiles
   coord_fixed()
 
-ca_map[[1]] <- ca_map[[1]] + labs(title = glue("Race and Local + State Revenue in New York School Districts"))
+ca_map[[1]] <- ca_map[[1]] + labs(title = glue("Race and Local + State Revenue in California School Districts"))
 ca_map[[2]] <- ca_map[[2]] + labs(caption = "Source: Common Core of Data (https://nces.ed.gov/ccd/),\naccessed via the Urban Institute's API")
 
 ca_maps <-
@@ -394,7 +384,7 @@ ca_maps <-
 
 ggdraw() +
   draw_plot(ca_maps, 0, 0, 1, 1) +
-  draw_plot(leg, 0.32, 0.46, 0.2, 0.2, scale = 0.5)
+  draw_plot(leg, 0.28, 0.46, 0.2, 0.2, scale = 0.5)
 
 ggsave("ca_maps.png", scale = 1.5)
 
