@@ -17,13 +17,20 @@ options(tigris_use_cache = TRUE)
 theme_set(
   theme_minimal() +
     theme(
+      text = element_text(family = "Palatino"),
       axis.title.x = element_text(size = 10, hjust = 1),
       axis.title.y = element_text(size = 10),
       axis.text.x = element_text(size = 8),
       axis.text.y = element_text(size = 8),
       plot.title = element_text(size = 10, colour = "grey25", face = "bold"),
       plot.subtitle = element_text(size = 9, colour = "grey45"),
-      legend.position = "bottom")
+      legend.position = "bottom", 
+      legend.box="vertical",
+      legend.margin=margin(),
+      legend.text = element_text(size = 6), 
+      legend.title = element_text(size = 8, vjust = 0),
+      legend.key = unit(0.5, "cm")
+      )
   )
 ```
 
@@ -52,6 +59,35 @@ d_dir <-
   na_if(-3) %>% 
   mutate(leaid = as.character(as.numeric(leaid)))
 
+d_enrollment <-
+  get_education_data(level = "school-districts", 
+                     source = "ccd", 
+                     topic = "enrollment", 
+                     by = "race", 
+                     filters = list(year = 2015, grade = 99)) %>% 
+  mutate(
+    race = case_when(
+        race == 1 ~ "white",
+        race == 2 ~ "black",
+        race == 3 ~ "hispanic",
+        race == 4 ~ "asian",
+        race == 5 ~ "other",
+        race == 6 ~ "other",
+        race == 7 ~ "other",
+        race == 8 ~ "other", 
+        race == 9 ~ "other",
+        race == 20 ~ "other",
+        race == 99 ~ "total"
+    )
+) %>% 
+    pivot_wider(id_cols = c(leaid, year), 
+                names_from = race, 
+                values_from = enrollment,
+                values_fn = list(enrollment = ~(sum(., na.rm = TRUE)))) %>% 
+  mutate(leaid = as.character(as.numeric(leaid)),
+         nonwhite = total - white) %>% 
+  mutate_at(vars(white:other, nonwhite), list(prop = ~ ./total))
+
 fips <- fips_codes %>% select(state, state_code) %>% distinct() %>% filter(state_code <= 56) %>% pull(state_code)
 
 district_geo <-
@@ -69,22 +105,50 @@ median_income <- map(fips, ~
   select(-NAME)
 
 district_geo <- left_join(district_geo, median_income, by = "GEOID")
+
+district_funding <- 
+  district_funding %>% 
+  left_join(d_dir %>% select(leaid, lea_name, city_location, state_location)) %>% 
+  left_join()
+  inner_join(district_geo %>%
+               select(GEOID, estimate, geometry) %>% 
+               mutate(GEOID = as.character(as.numeric(GEOID))), 
+             by = c("leaid" = "GEOID"))
 ```
 
 ## The Landscape of school funding 
 
+Where does school funding come from?
+
+```{r}
+district_funding %>% 
+  drop_na(state_location) %>% 
+  select(fips, leaid, state_location,
+         rev_fed_total, 
+         rev_state_total, rev_local_total,
+         enrollment_fall_responsible,
+         estimate) %>% 
+  group_by(state_location) %>% 
+  summarize_at(vars(contains("rev")), sum, na.rm = TRUE) %>% 
+  pivot_longer(cols = c(-state_location)) %>% 
+  group_by(state_location) %>% 
+  mutate(prop_value = value/sum(value, na.rm = TRUE)) %>% 
+  ggplot(aes(x = state_location, y = prop_value, group = name)) +
+  geom_col(aes(fill = name), alpha = 0.7) +
+  scale_fill_viridis_d(name = "Revenue Source", labels = c("Federal", "Local", "State")) +
+  labs(x = "", y = "Share", title = "Revenue Source by State",
+       caption = "Source: My calculations using data from the Common Core of Data, accessed through the Urban Institute's API.") +
+  coord_flip()
+```
+
+
 ```{r revenue}
 district_funding %>% 
-  left_join(d_dir %>% select(leaid, lea_name, city_location)) %>% 
-  inner_join(district_geo %>%
-               select(GEOID, estimate, geometry) %>% 
-               mutate(GEOID = as.character(as.numeric(GEOID))), 
-             by = c("leaid" = "GEOID")) %>% 
   select(fips, leaid, city_location,
          rev_total, rev_fed_total, 
          rev_state_total, rev_local_total,
          enrollment_fall_responsible,
-         estimate) %>% 
+         estimate, nonwhite_prop) %>% 
   filter(rev_total != 0,
          rev_fed_total != 0,
          rev_state_total != 0,
@@ -93,7 +157,7 @@ district_funding %>%
   drop_na(estimate) %>% 
   mutate_at(vars(enrollment_fall_responsible, contains("rev")), log) %>%
   mutate(income_ntile = ntile(estimate, 5)) %>% 
-  pivot_longer(cols = c(-fips, -leaid, -city_location, -enrollment_fall_responsible, -income_ntile, -estimate)) %>% 
+  pivot_longer(cols = c(-fips, -leaid, -city_location, -enrollment_fall_responsible, -income_ntile, -estimate, -nonwhite_prop)) %>% 
   mutate(name = case_when(
     name == "rev_fed_total" ~ "Total federal revenue",
     name == "rev_state_total" ~ "Total state revenue",
@@ -110,5 +174,161 @@ district_funding %>%
   scale_color_viridis_d(name = "Income quantile") +
   labs(x = "Enrollment", y = "") +
   facet_wrap(~ name)
+```
+
+```{r}
+district_funding %>% 
+  select(fips, leaid, city_location,
+         rev_total, rev_fed_total, 
+         rev_state_total, rev_local_total,
+         enrollment_fall_responsible,
+         estimate, nonwhite_prop) %>% 
+  filter(rev_total != 0,
+         rev_fed_total != 0,
+         rev_state_total != 0,
+         rev_local_total != 0,
+         enrollment_fall_responsible != 0) %>% 
+  drop_na(estimate) %>% 
+  mutate_at(vars(enrollment_fall_responsible, contains("rev")), log) %>%
+  mutate(income_ntile = ntile(estimate, 5)) %>% 
+  pivot_longer(cols = c(-fips, -leaid, -city_location, -enrollment_fall_responsible, -income_ntile, -estimate, -nonwhite_prop)) %>% 
+  mutate(name = case_when(
+    name == "rev_fed_total" ~ "Total federal revenue",
+    name == "rev_state_total" ~ "Total state revenue",
+    name == "rev_local_total" ~ "Total local revenue",
+    name == "rev_total" ~ "Total revenue",
+  )) %>% 
+  mutate(name = factor(name, levels = c("Total federal revenue",
+                                        "Total state revenue",
+                                        "Total local revenue",
+                                        "Total revenue"))) %>% 
+   ggplot(aes(x = enrollment_fall_responsible, y = value)) +
+  geom_point(aes(color = factor(income_ntile), size = nonwhite_prop), alpha = 0.5) +
+  geom_smooth(method = "lm", color = "plum4") +
+  scale_color_viridis_d(name = "Income quantile") +
+  scale_size(name = "Share of students of color",
+             range = c(0.1, 5)) +
+  labs(x = "Enrollment", y = "",
+       title = "Revenue source and enrollement",
+       caption = "Source: My calculations using data from the Common Core of Data, accessed through the Urban Institute's API.") +
+  facet_wrap(~ name)
+```
+
+```{r}
+district_funding %>% 
+  select(fips, leaid, city_location,
+         rev_total, rev_fed_total, 
+         rev_state_total, rev_local_total,
+         enrollment_fall_responsible,
+         estimate, nonwhite_prop, nonwhite) %>% 
+  filter(rev_total != 0,
+         rev_fed_total != 0,
+         rev_state_total != 0,
+         rev_local_total != 0,
+         enrollment_fall_responsible != 0) %>% 
+  drop_na(estimate) %>% 
+  mutate_at(vars(enrollment_fall_responsible, contains("rev")), log) %>%
+  mutate(income_ntile = ntile(estimate, 5)) %>% 
+  pivot_longer(cols = c(-fips, -leaid, -city_location, 
+                        -enrollment_fall_responsible, -income_ntile, 
+                        -estimate, -nonwhite_prop, -nonwhite)) %>% 
+  mutate(name = case_when(
+    name == "rev_fed_total" ~ "Total federal revenue",
+    name == "rev_state_total" ~ "Total state revenue",
+    name == "rev_local_total" ~ "Total local revenue",
+    name == "rev_total" ~ "Total revenue",
+  )) %>% 
+  mutate(name = factor(name, levels = c("Total federal revenue",
+                                        "Total state revenue",
+                                        "Total local revenue",
+                                        "Total revenue"))) %>% 
+   ggplot(aes(x = nonwhite, y = value)) +
+  geom_point(aes(color = factor(income_ntile), size = enrollment_fall_responsible), alpha = 0.5) +
+  geom_smooth(method = "lm", color = "plum4") +
+  scale_color_viridis_d(name = "Income quantile") +
+  scale_size(name = "Share of students of color",
+             range = c(0.1, 5)) +
+  labs(x = "Enrollment", y = "",
+       title = "Revenue source and enrollement",
+       caption = "Source: My calculations using data from the Common Core of Data, accessed through the Urban Institute's API.") +
+  facet_wrap(~ name)
+```
+
+```{r}
+district_funding %>% 
+    select(fips, leaid, city_location,
+           rev_total, rev_fed_total, 
+           rev_state_total, rev_local_total,
+           enrollment_fall_responsible,
+           estimate, nonwhite_prop, nonwhite) %>% 
+    filter(rev_total != 0,
+           rev_fed_total != 0,
+           rev_state_total != 0,
+           rev_local_total != 0,
+           enrollment_fall_responsible != 0) %>% 
+    drop_na(estimate) %>% 
+    mutate_at(vars(enrollment_fall_responsible, estimate, contains("rev")), log) %>%
+    pivot_longer(cols = c(-fips, -leaid, -city_location, 
+                          -enrollment_fall_responsible,
+                          -estimate, -nonwhite_prop, -nonwhite)) %>% 
+    mutate(name = case_when(
+        name == "rev_fed_total" ~ "Total federal revenue",
+        name == "rev_state_total" ~ "Total state revenue",
+        name == "rev_local_total" ~ "Total local revenue",
+        name == "rev_total" ~ "Total revenue",
+    )) %>% 
+    mutate(name = factor(name, levels = c("Total federal revenue",
+                                          "Total state revenue",
+                                          "Total local revenue",
+                                          "Total revenue"))) %>% 
+    ggplot(aes(x = estimate, y = value)) +
+    geom_point(aes(color = nonwhite_prop), alpha = 0.5) + geom_smooth(method = "lm", color = "plum4") +
+    scale_color_viridis_c(name = "Share of students of color") +
+    labs(x = "Log of Median Income", y = "",
+         title = "Revenue source and district median income",
+         caption = "Source: My calculations using data from the Common Core of Data, accessed through the Urban Institute's API.") +
+    facet_wrap(~ name)
+```
+
+## Per student funding from various sources
+
+```{r}
+district_funding %>% 
+    select(fips, leaid, city_location,
+           rev_total, rev_fed_total, 
+           rev_state_total, rev_local_total,
+           enrollment_fall_responsible,
+           estimate, nonwhite_prop, nonwhite) %>% 
+    filter(rev_total != 0,
+           rev_fed_total != 0,
+           rev_state_total != 0,
+           rev_local_total != 0,
+           enrollment_fall_responsible != 0) %>% 
+    drop_na(estimate) %>% 
+    mutate_at(vars(contains("rev")), 
+              list(per_student = ~ ./enrollment_fall_responsible)) %>% 
+    select(-ends_with("total")) %>% 
+    mutate_at(vars(enrollment_fall_responsible, estimate, contains("per_student")), log) %>%
+    pivot_longer(cols = c(-fips, -leaid, -city_location, 
+                          -enrollment_fall_responsible,
+                          -estimate, -nonwhite_prop, -nonwhite)) %>% 
+    mutate(name = case_when(
+        name == "rev_fed_total_per_student" ~ "Total per student federal revenue",
+        name == "rev_state_total_per_student" ~ "Total per student state revenue",
+        name == "rev_local_total_per_student" ~ "Total per student local revenue",
+        name == "rev_total_per_student" ~ "Total per student revenue",
+    )) %>% 
+    mutate(name = factor(name, levels = c("Total per student federal revenue",
+                                          "Total per student state revenue",
+                                          "Total per student local revenue",
+                                          "Total per student revenue"))) %>% 
+    ggplot(aes(x = nonwhite_prop, y = value)) +
+    geom_point(aes(color = estimate), alpha = 0.5) +
+    geom_smooth(method = "lm", color = "plum4") +
+    scale_color_viridis_c(name = "Logged Median Income") +
+    labs(x = "Share of students of color", y = "",
+         title = "Per student revenue by share of students of color",
+         caption = "Source: My calculations using data from the Common Core of Data, accessed through the Urban Institute's API.") +
+    facet_wrap(~ name, scales = "free_y")
 ```
 
