@@ -1,0 +1,114 @@
+---
+title: "The Poorest School Districts in America"
+author: "Richard Paquin Morel"
+date: "3/5/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(educationdata)
+library(tigris)
+library(sf)
+options(tigris_use_cache = TRUE)
+
+theme_set(
+  theme_minimal() +
+    theme(
+      axis.title.x = element_text(size = 10, hjust = 1),
+      axis.title.y = element_text(size = 10),
+      axis.text.x = element_text(size = 8),
+      axis.text.y = element_text(size = 8),
+      plot.title = element_text(size = 10, colour = "grey25", face = "bold"),
+      plot.subtitle = element_text(size = 9, colour = "grey45"),
+      legend.position = "bottom")
+  )
+```
+
+## School Funding in America, a Preamble
+
+It's no secret that there are wide disparities in the funding of schools in the United States. Constitutionally, education is a reserved power of the states, so the federal government is limited, policy-wise, in how it can intervene in educational matters. Since the Great Society legislation of the 1960s, the federal role in education has been supplemental funding for schools serving low income students. Culturally, there is a strong tradition of "local control" over schools--schools are administered and funded at the district level. Most school funding comes from state and local sources. How involved state governments are vary greatly from state to state.
+
+```{r get data}
+district_funding <-
+  get_education_data(level = "school-districts", 
+                     source = "ccd",
+                     topic = "finance",
+                     filters = list(year = 2015)) %>% 
+  na_if(-1) %>% 
+  na_if(-2) %>% 
+  na_if(-3) %>% 
+  mutate(leaid = as.character(as.numeric(leaid)))
+
+d_dir <-
+  get_education_data(level = "school-districts", 
+                     source = "ccd",
+                     topic = "directory",
+                     filters = list(year = 2015)) %>% 
+  na_if(-1) %>% 
+  na_if(-2) %>% 
+  na_if(-3) %>% 
+  mutate(leaid = as.character(as.numeric(leaid)))
+
+fips <- fips_codes %>% select(state, state_code) %>% distinct() %>% filter(state_code <= 56) %>% pull(state_code)
+
+district_geo <-
+  map(fips, ~ school_districts(.x, year = 2015, class = "sf"))
+
+district_geo <- reduce(district_geo, rbind)
+#B19013_001
+median_income <- map(fips, ~ 
+                       get_acs(geography = "school district (unified)", 
+                               variables = "B19013_001", 
+                               year = 2015,
+                               state = .x)
+                     ) %>% 
+  bind_rows() %>% 
+  select(-NAME)
+
+district_geo <- left_join(district_geo, median_income, by = "GEOID")
+```
+
+## The Landscape of school funding 
+
+```{r revenue}
+district_funding %>% 
+  left_join(d_dir %>% select(leaid, lea_name, city_location)) %>% 
+  inner_join(district_geo %>%
+               select(GEOID, estimate, geometry) %>% 
+               mutate(GEOID = as.character(as.numeric(GEOID))), 
+             by = c("leaid" = "GEOID")) %>% 
+  select(fips, leaid, city_location,
+         rev_total, rev_fed_total, 
+         rev_state_total, rev_local_total,
+         enrollment_fall_responsible,
+         estimate) %>% 
+  filter(rev_total != 0,
+         rev_fed_total != 0,
+         rev_state_total != 0,
+         rev_local_total != 0,
+         enrollment_fall_responsible != 0) %>% 
+  drop_na(estimate) %>% 
+  mutate_at(vars(enrollment_fall_responsible, contains("rev")), log) %>%
+  mutate(income_ntile = ntile(estimate, 5)) %>% 
+  pivot_longer(cols = c(-fips, -leaid, -city_location, -enrollment_fall_responsible, -income_ntile, -estimate)) %>% 
+  mutate(name = case_when(
+    name == "rev_fed_total" ~ "Total federal revenue",
+    name == "rev_state_total" ~ "Total state revenue",
+    name == "rev_local_total" ~ "Total local revenue",
+    name == "rev_total" ~ "Total revenue",
+  )) %>% 
+  mutate(name = factor(name, levels = c("Total federal revenue",
+                                        "Total state revenue",
+                                        "Total local revenue",
+                                        "Total revenue"))) %>% 
+   ggplot(aes(x = enrollment_fall_responsible, y = value)) +
+  geom_point(aes(color = factor(income_ntile)), alpha = 0.5) +
+  geom_smooth(method = "lm", color = "plum4") +
+  scale_color_viridis_d(name = "Income quantile") +
+  labs(x = "Enrollment", y = "") +
+  facet_wrap(~ name)
+```
+
