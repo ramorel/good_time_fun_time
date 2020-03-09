@@ -6,38 +6,44 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-
-library(tidyverse)
-library(educationdata)
-library(tigris)
-library(sf)
-options(tigris_use_cache = TRUE)
-
-theme_set(
-  theme_minimal() +
-    theme(
-      text = element_text(family = "Palatino"),
-      axis.title.x = element_text(size = 10, hjust = 1),
-      axis.title.y = element_text(size = 10),
-      axis.text.x = element_text(size = 8),
-      axis.text.y = element_text(size = 8),
-      plot.title = element_text(size = 10, colour = "grey25", face = "bold"),
-      plot.subtitle = element_text(size = 9, colour = "grey45"),
-      legend.position = "bottom", 
-      legend.box="vertical",
-      legend.margin=margin(),
-      legend.text = element_text(size = 6), 
-      legend.title = element_text(size = 8, vjust = 0),
-      legend.key = unit(0.5, "cm")
-      )
-  )
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 ```
 
 ## School Funding in America, a Preamble
 
 It's no secret that there are wide disparities in the funding of schools in the United States. Constitutionally, education is a reserved power of the states, so the federal government is limited, policy-wise, in how it can intervene in educational matters. Since the Great Society legislation of the 1960s, the federal role in education has been supplemental funding for schools serving low income students. Culturally, there is a strong tradition of "local control" over schools--schools are administered and funded at the district level. Most school funding comes from state and local sources. How involved state governments are vary greatly from state to state.
 
+First up, load the necessary libraries and I like to define a custom `ggplot` theme. I use the [`tigris` package](https://github.com/walkerke/tigris) to get geographic data on school district boundaries. Using `options(tigris_use_cache = TRUE)` creates a cache of these data to prevent the need to redownload.
+```{r}
+library(tidyverse)
+library(tidycensus)
+library(educationdata)
+library(tigris)
+library(sf)
+
+options(tigris_use_cache = TRUE)
+
+theme_set(
+  theme_minimal() +
+    theme(
+      text = element_text(family = "Lato"),
+      axis.title.x = element_text(size = 12, hjust = 1),
+      axis.title.y = element_text(size = 12),
+      axis.text.x = element_text(size = 10),
+      axis.text.y = element_text(size = 10),
+      plot.title = element_text(size = 12, colour = "grey25", face = "bold"),
+      plot.subtitle = element_text(size = 10, colour = "grey45"),
+      legend.position = "bottom", 
+      legend.box = "vertical",
+      legend.margin=margin(),
+      legend.text = element_text(size = 8), 
+      legend.title = element_text(size = 10, vjust = 0),
+      legend.key.size = unit(0.5, "cm")
+      )
+  )
+```
+
+Data come from the National Center for Education Statistics' (NCES) [Common Core of Data](https://nces.ed.gov/ccd/), which contains administrative, demographic, and financial data for all public school districts in the country. I get information on poverty in school districts through the Small Area Income and Poverty Estimates. I get these data using the API (and associated package) developed by [the Urban Institute](https://educationdata.urban.org/documentation/index.html). Geographic information I get from the `tirgis` package, which accesses the [US Census API](https://www.census.gov/developers/). Lastly, I get data on meida income in school districts from the [American Communities Survey](https://www.census.gov/programs-surveys/acs/), again accessed through the Census API using the [`tidycensus` package](https://walkerke.github.io/tidycensus/index.html). `tidycensus` requires and API key and developer account with the Census.  These data take some time to download, so go grab some coffee or mix up a negroni for yourself and for me.
 ```{r get data}
 district_funding <-
   get_education_data(level = "school-districts", 
@@ -59,6 +65,13 @@ d_dir <-
   na_if(-3) %>% 
   mutate(leaid = as.character(as.numeric(leaid)))
 
+d_pov <-
+   get_education_data(level = "school-districts", 
+                     source = "saipe",
+                     filters = list(year = 2015)) %>% 
+  mutate(leaid = as.character(as.numeric(leaid))) %>% 
+  select(leaid, contains("est"))
+                     
 d_enrollment <-
   get_education_data(level = "school-districts", 
                      source = "ccd", 
@@ -90,11 +103,20 @@ d_enrollment <-
 
 fips <- fips_codes %>% select(state, state_code) %>% distinct() %>% filter(state_code <= 56) %>% pull(state_code)
 
-district_geo <-
-  map(fips, ~ school_districts(.x, year = 2015, class = "sf"))
+unified_geo <-
+  map(fips, ~ school_districts(.x, type = "unified", year = 2015, class = "sf")) %>% 
+  reduce(., rbind)
 
-district_geo <- reduce(district_geo, rbind)
-#B19013_001
+elementary_geo <-
+  map(fips, ~ school_districts(.x, type = "elementary", year = 2015, class = "sf")) %>% 
+  reduce(., rbind)
+
+secondary_geo <-
+  map(fips, ~ school_districts(.x, type = "secondary", year = 2015, class = "sf")) %>% 
+  reduce(., rbind)
+
+district_geo <- reduce(list(unified_geo, elementary_geo, secondary_geo), rbind)
+
 median_income <- map(fips, ~ 
                        get_acs(geography = "school district (unified)", 
                                variables = "B19013_001", 
@@ -109,7 +131,8 @@ district_geo <- left_join(district_geo, median_income, by = "GEOID")
 district_funding <- 
   district_funding %>% 
   left_join(d_dir %>% select(leaid, lea_name, city_location, state_location)) %>% 
-  left_join()
+  left_join(d_enrollment) %>% 
+  left_join(d_pov) %>% 
   inner_join(district_geo %>%
                select(GEOID, estimate, geometry) %>% 
                mutate(GEOID = as.character(as.numeric(GEOID))), 
@@ -214,45 +237,6 @@ district_funding %>%
   facet_wrap(~ name)
 ```
 
-```{r}
-district_funding %>% 
-  select(fips, leaid, city_location,
-         rev_total, rev_fed_total, 
-         rev_state_total, rev_local_total,
-         enrollment_fall_responsible,
-         estimate, nonwhite_prop, nonwhite) %>% 
-  filter(rev_total != 0,
-         rev_fed_total != 0,
-         rev_state_total != 0,
-         rev_local_total != 0,
-         enrollment_fall_responsible != 0) %>% 
-  drop_na(estimate) %>% 
-  mutate_at(vars(enrollment_fall_responsible, contains("rev")), log) %>%
-  mutate(income_ntile = ntile(estimate, 5)) %>% 
-  pivot_longer(cols = c(-fips, -leaid, -city_location, 
-                        -enrollment_fall_responsible, -income_ntile, 
-                        -estimate, -nonwhite_prop, -nonwhite)) %>% 
-  mutate(name = case_when(
-    name == "rev_fed_total" ~ "Total federal revenue",
-    name == "rev_state_total" ~ "Total state revenue",
-    name == "rev_local_total" ~ "Total local revenue",
-    name == "rev_total" ~ "Total revenue",
-  )) %>% 
-  mutate(name = factor(name, levels = c("Total federal revenue",
-                                        "Total state revenue",
-                                        "Total local revenue",
-                                        "Total revenue"))) %>% 
-   ggplot(aes(x = nonwhite, y = value)) +
-  geom_point(aes(color = factor(income_ntile), size = enrollment_fall_responsible), alpha = 0.5) +
-  geom_smooth(method = "lm", color = "plum4") +
-  scale_color_viridis_d(name = "Income quantile") +
-  scale_size(name = "Share of students of color",
-             range = c(0.1, 5)) +
-  labs(x = "Enrollment", y = "",
-       title = "Revenue source and enrollement",
-       caption = "Source: My calculations using data from the Common Core of Data, accessed through the Urban Institute's API.") +
-  facet_wrap(~ name)
-```
 
 ```{r}
 district_funding %>% 
@@ -331,4 +315,104 @@ district_funding %>%
          caption = "Source: My calculations using data from the Common Core of Data, accessed through the Urban Institute's API.") +
     facet_wrap(~ name, scales = "free_y")
 ```
+
+```{r}
+district_funding %>% 
+    select(fips, leaid, city_location,
+           rev_total, rev_fed_total, 
+           rev_state_total, rev_local_total,
+           enrollment_fall_responsible,
+           estimate, nonwhite_prop, nonwhite, est_population_5_17_poverty_pct) %>% 
+    filter(rev_total != 0,
+           rev_fed_total != 0,
+           rev_state_total != 0,
+           rev_local_total != 0,
+           enrollment_fall_responsible != 0) %>% 
+    drop_na(estimate) %>% 
+    mutate_at(vars(contains("rev")), 
+              list(per_student = ~ ./enrollment_fall_responsible)) %>% 
+    select(-ends_with("total")) %>% 
+    mutate_at(vars(enrollment_fall_responsible, estimate, contains("per_student")), log) %>%
+    pivot_longer(cols = c(-fips, -leaid, -city_location, 
+                          -enrollment_fall_responsible,
+                          -estimate, -nonwhite_prop, -nonwhite, -est_population_5_17_poverty_pct)) %>% 
+    mutate(name = case_when(
+        name == "rev_fed_total_per_student" ~ "Total per student federal revenue",
+        name == "rev_state_total_per_student" ~ "Total per student state revenue",
+        name == "rev_local_total_per_student" ~ "Total per student local revenue",
+        name == "rev_total_per_student" ~ "Total per student revenue",
+    )) %>% 
+    mutate(name = factor(name, levels = c("Total per student federal revenue",
+                                          "Total per student state revenue",
+                                          "Total per student local revenue",
+                                          "Total per student revenue"))) %>% 
+    ggplot(aes(x = nonwhite_prop, y = value)) +
+    geom_point(aes(color = est_population_5_17_poverty_pct), alpha = 0.5) +
+    geom_smooth(method = "lm", color = "plum4") +
+    scale_color_viridis_c(name = "% in poverty") +
+    labs(x = "Share of students of color", y = "",
+         title = "Per student revenue by share of students of color",
+         caption = "Source: My calculations using data from the Common Core of Data, accessed through the Urban Institute's API.") +
+    facet_wrap(~ name, scales = "free_y")
+```
+
+
+```{r}
+district_funding %>% 
+    select(fips, leaid, city_location,
+           rev_total, rev_fed_total, 
+           rev_state_total, rev_local_total,
+           enrollment_fall_responsible,
+           estimate, nonwhite_prop, nonwhite, est_population_5_17_poverty_pct) %>% 
+    filter(rev_total != 0,
+           rev_fed_total != 0,
+           rev_state_total != 0,
+           rev_local_total != 0,
+           enrollment_fall_responsible != 0) %>% 
+    drop_na(estimate) %>% 
+    mutate_at(vars(contains("rev")), 
+              list(per_student = ~ ./enrollment_fall_responsible)) %>% 
+    select(-ends_with("total")) %>% 
+    mutate_at(vars(enrollment_fall_responsible, estimate, contains("per_student")), log) %>%
+    pivot_longer(cols = c(-fips, -leaid, -city_location, 
+                          -enrollment_fall_responsible,
+                          -estimate, -nonwhite_prop, -nonwhite, -est_population_5_17_poverty_pct)) %>% 
+    mutate(name = case_when(
+        name == "rev_fed_total_per_student" ~ "Total per student federal revenue",
+        name == "rev_state_total_per_student" ~ "Total per student state revenue",
+        name == "rev_local_total_per_student" ~ "Total per student local revenue",
+        name == "rev_total_per_student" ~ "Total per student revenue",
+    )) %>% 
+    mutate(name = factor(name, levels = c("Total per student federal revenue",
+                                          "Total per student state revenue",
+                                          "Total per student local revenue",
+                                          "Total per student revenue"))) %>% 
+    ggplot(aes(x = est_population_5_17_poverty_pct, y = value)) +
+    geom_point(aes(color = nonwhite_prop), alpha = 0.5) +
+    geom_smooth(method = "lm", color = "plum4") +
+    scale_color_viridis_c(name = "%students of color") +
+    labs(x = "%5-17 in poverty", y = "",
+         title = "Per student revenue by % in poverty",
+         caption = "Source: My calculations using data from the Common Core of Data, accessed through the Urban Institute's API.") +
+    facet_wrap(~ name, scales = "free_y")
+```
+
+```{r}
+district_funding %>% 
+  select(fips, leaid, rev_local_total,
+         rev_total, enrollment_fall_responsible,
+         estimate, est_population_5_17_poverty_pct) %>% 
+  filter(rev_total != 0, est_population_5_17_poverty_pct <= 0.75,
+         enrollment_fall_responsible != 0) %>% 
+  drop_na(estimate) %>% mutate(rev_local_total = rev_local_total/rev_total) %>% 
+  mutate_at(vars(enrollment_fall_responsible, rev_total), log) %>% ggplot(aes(x = est_population_5_17_poverty_pct, y = rev_total)) + geom_point(aes(color = rev_local_total), alpha = 0.5) +
+  geom_smooth(method = "lm", color = "plum4") +
+  scale_color_viridis_c(name = "Share of revenue from local sources") +
+  labs(x = "%5-17 in poverty", y = "Total revenue", title = "Total revenue by %5-12 in poverty")
+```
+
+```{r}
+
+```
+
 
