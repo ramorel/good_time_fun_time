@@ -44,7 +44,7 @@ us_cleaned <-
   mutate(text = str_replace_all(text, "@\\S+ ", " ")) %>%
   mutate(text = str_replace_all(text, "#\\S+ ", " ")) %>%
   mutate(text = tm::removeWords(text, stopwords::data_stopwords_smart$en)) %>% 
-  mutate(text = tm::removeWords(text, stopwords::data_stopwords_snowball$es)) %>% 
+  mutate(text = tm::removeWords(text, stopwords::data_stopwords_snowball$en)) %>% 
   mutate(text = str_replace_all(text, "[^[:alnum:]]", " ")) %>%
   mutate(text = str_replace_all(text, "\\b[a-z]{1,2}\\b", " ")) %>%
   mutate(text = str_squish(text))
@@ -81,10 +81,10 @@ covid_topics <- tidy(covid_fit)
 date <- as_datetime(Sys.time(), tz = "America/Chicago")
 
 p1 <- covid_v_corona %>% 
-  mutate(word = reorder_within(word, n, covid)) %>% 
   group_by(covid) %>% 
   top_n(20) %>% 
   ungroup() %>% 
+  mutate(word = reorder_within(word, n, covid)) %>% 
   ggplot(aes(x = n, y = word, fill = covid)) +
   geom_col(alpha = 0.7) +
   scale_fill_viridis_d(guide = FALSE) +
@@ -96,7 +96,8 @@ p1 <- covid_v_corona %>%
 
 p2 <- us_tfidf %>% 
   group_by(covid) %>% 
-  top_n(15) %>% 
+  arrange(desc(tf_idf)) %>% 
+  slice(1:15) %>% 
   ggplot(aes(x = tf_idf, y = word, fill = covid)) +
   geom_col(alpha = 0.7) +
   scale_fill_viridis_d(guide = FALSE) +
@@ -150,7 +151,7 @@ hashtag_p <- us_hashtags %>%
   mutate(prop = n/sum(n),
          value = as_factor(value)) %>% 
   top_n(25) %>% 
-  ggplot(aes(x = prop, y = rev(value))) +
+  ggplot(aes(x = prop, y = value)) +
   geom_col(aes(fill = value)) +
   scale_fill_viridis_d(guide = FALSE) +
   labs(x = "", y = "", 
