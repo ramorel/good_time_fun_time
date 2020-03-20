@@ -5,6 +5,10 @@ library(ggthemes)
 library(stm)
 library(lubridate)
 library(patchwork)
+library(tidygraph)
+library(igraph)
+library(ggraph)
+library(ggdendro)
 
 bibtex::write.bib("rtweet")
 
@@ -29,6 +33,7 @@ us_tweets <- search_tweets(c("covid OR coronavirus"),
                            retryonratelimit = TRUE,
                            lang = "en")
 
+saveRDS(object = us_tweets, file = glue::glue("us_cv_tweets_{as_datetime(Sys.time(), tz = 'America/Chicago')}.rda"))
 
 # Covid v coronavirus
 us_cleaned <- 
@@ -53,7 +58,7 @@ covid_v_corona <-
   us_cleaned %>% 
   mutate(covid = ifelse(str_detect(text, "covid"), "Mentions COVID", "Mentions only coronavirus")) %>% 
   unnest_tokens(word, text) %>% 
-  filter(!str_detect(word, "coronavirus|covid")) %>% 
+  filter(!str_detect(word, "coronavirus|covid|corona")) %>% 
   count(covid, word, sort = TRUE) %>%
   ungroup()
 
@@ -68,7 +73,7 @@ us_tfidf <-
 convid_dfm <- 
   us_cleaned %>% 
   unnest_tokens(word, text) %>% 
-  filter(!str_detect(word, "coronavirus|covid")) %>% 
+  filter(!str_detect(word, "coronavirus|covid|corona")) %>% 
   count(user_id, word, sort = TRUE) %>%
   ungroup()%>%
   cast_dfm(user_id, word, n)
@@ -125,16 +130,6 @@ p3 <- covid_topics %>%
   scale_y_reordered() + 
   scale_x_continuous(labels = scales::number_format(accuracy = 0.01))
 
-ggsave(glue::glue("freq_cv_{as_datetime(Sys.time(), tz = 'America/Chicago')}.png"), p1, width = 11.5, height = 8)
-ggsave(glue::glue("tfidf_cv_{as_datetime(Sys.time(), tz = 'America/Chicago')}.png"), p2, width = 11.5, height = 8)
-ggsave(glue::glue("topic_models_cv_{as_datetime(Sys.time(), tz = 'America/Chicago')}.png"), p3, width = 11.5, height = 8)
-
-
-(p1 | p2) / p3 + plot_layout(nrow = 2, heights = c(1, 2.5))
-ggsave(glue::glue("combo_cv_plot_{as_datetime(Sys.time(), tz = 'America/Chicago')}.png"), width = 11.5, height = 8)
-
-saveRDS(object = us_tweets, file = glue::glue("us_cv_tweets_{as_datetime(Sys.time(), tz = 'America/Chicago')}.rda"))
-
 
 # Hashtags
 us_hashtags <- bind_cols(us_tweets %>% select(-text), str_extract_all(us_tweets$text, "#[a-zA-Z0-9]+", simplify = TRUE) %>% as_tibble(.name_repair = "unique"))
@@ -143,7 +138,7 @@ us_hashtags <- us_hashtags %>%
   pivot_longer(cols = -user_id) %>% 
   filter(value != "") %>% 
   mutate(value = tolower(value)) %>% 
-  filter(!str_detect(value, "coronavirus|covid"))
+  filter(!str_detect(value, "coronavirus|covid|corona"))
 
 hashtag_p <- us_hashtags %>% 
   count(value) %>% 
@@ -158,9 +153,6 @@ hashtag_p <- us_hashtags %>%
        title = "Most common hastags for for COVID-19/Coronavirus tweets, United States",
        subtitle = glue::glue("Tweets collected {wday(date, label = TRUE, abbr = FALSE)}, {month(date, label = TRUE)} {day(date)} at {format(Sys.time(), '%X %Z')}"))
 
-library(tidygraph)
-library(igraph)
-library(ggraph)
 
 us_net <- 
   us_hashtags %>% 
@@ -230,6 +222,14 @@ dendro <- eq %>%
 ggsave(glue::glue("hashtag_freg_{as_datetime(Sys.time(), tz = 'America/Chicago')}.png"), hashtag_p, width = 11.5, height = 8)
 ggsave(glue::glue("hash_net_{as_datetime(Sys.time(), tz = 'America/Chicago')}.png"), h_net, width = 11.5, height = 8)
 ggsave(glue::glue("hash_dendro_{as_datetime(Sys.time(), tz = 'America/Chicago')}.png"), dendro, width = 11.5, height = 8)
+
+ggsave(glue::glue("freq_cv_{as_datetime(Sys.time(), tz = 'America/Chicago')}.png"), p1, width = 11.5, height = 8)
+ggsave(glue::glue("tfidf_cv_{as_datetime(Sys.time(), tz = 'America/Chicago')}.png"), p2, width = 11.5, height = 8)
+ggsave(glue::glue("topic_models_cv_{as_datetime(Sys.time(), tz = 'America/Chicago')}.png"), p3, width = 11.5, height = 8)
+
+
+(p1 | p2) / p3 + plot_layout(nrow = 2, heights = c(1, 2.5))
+ggsave(glue::glue("combo_cv_plot_{as_datetime(Sys.time(), tz = 'America/Chicago')}.png"), width = 11.5, height = 8)
 
 ((hashtag_p / dendro + plot_layout(nrow = 2)) | h_net)
 
